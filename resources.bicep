@@ -1,5 +1,5 @@
 targetScope = 'subscription'
-param KeyVaultName string = 'amanoilov-102'
+param KeyVaultName string = 'amanoilov-pipeline01'
 
 @description('The name of the resource group for the VNet.')
 param vnetResourceGroupName string = 'my_vnet_rg'
