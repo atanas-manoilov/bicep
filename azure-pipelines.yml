@@ -1,0 +1,338 @@
+#trigger:
+#  branches:
+#    include:
+#      - main  # Specify the branch to trigger the pipeline
+trigger: none
+
+parameters:
+  - name: azureServiceConnection
+    displayName: 'Azure Service Connection'
+    type: string
+    default: 'ServiceConnectionToKrasiAz'
+
+variables:
+  REPO_URL: "https://dev.azure.com/atanasmanoilov/HelmCharts/_git/HelmCharts"
+
+pool:
+  name: "self-hosted-pmx"  # Replace with the actual name of your self-hosted agent pool
+
+stages:
+  - stage: Deploy_AKS
+    displayName: "Deploy AKS Cluster via Bicep"
+    jobs:
+      - job: deploy
+        displayName: "Deploy Bicep and Capture Outputs"
+        steps:
+          # Step: Checkout the code
+          - checkout: self
+            clean: true
+
+          # Step: Install Azure CLI
+          - task: Bash@3
+            displayName: "Install Azure CLI"
+            inputs:
+              targetType: 'inline'
+              script: |
+                echo "Installing Azure CLI..."
+                curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+                az version
+
+          # Step: Install jq 
+          - task: Bash@3
+            displayName: "Install jq"
+            inputs:
+              targetType: 'inline'
+              script: |
+                echo "Updating package list and ensuring jq is installed..."
+                sudo apt-get update -y
+                sudo apt-get install -y jq
+                echo "jq installation complete. Version:"
+                jq --version
+
+          # Step: Deploy RGs with Bicep
+          - task: AzureCLI@2
+            displayName: "Deploy RGs with ARM"
+            inputs:
+              azureSubscription: ${{ parameters.azureServiceConnection }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                az deployment sub create --location westus2 --template-file "$(System.DefaultWorkingDirectory)/rg.bicep"
+
+          # Step: Deploy Resources with Bicep
+          - task: AzureCLI@2
+            displayName: "Deploy Resources with ARM"
+            inputs:
+              azureSubscription: ${{ parameters.azureServiceConnection }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                az deployment sub create --location westus2 --template-file "$(System.DefaultWorkingDirectory)/resources.bicep"
+
+          # Step: Capture Outputs JSON
+          - task: AzureCLI@2
+            displayName: "Capture Outputs JSON  "
+            inputs:
+              azureSubscription: ${{ parameters.azureServiceConnection }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                OUTPUT_FILE="$(System.DefaultWorkingDirectory)/outputs.json"
+                echo "Capturing deployment outputs to: $OUTPUT_FILE"
+                az deployment sub show -n resources --query "properties.outputs" -o json > "$OUTPUT_FILE"
+
+                # Check if the file was created successfully
+                if [ ! -f "$OUTPUT_FILE" ]; then
+                  echo "Error: Failed to create $OUTPUT_FILE"
+                  exit 1
+                fi
+
+          # Step: Download SSL Certificate
+          - task: DownloadSecureFile@1
+            displayName: "Download SSL Certificate"
+            inputs:
+              secureFile: my-certificate.pfx
+
+          # Step: Import Certificate to Key Vault
+          - task: AzureCLI@2
+            displayName: "Import Cert to Key Vault"
+            env:
+              CERT_PASSWORD: $(certPassword)  # Map the secret variable as an environment variable
+              JSON_OUTPUT_PATH: $(System.DefaultWorkingDirectory)/outputs.json  
+            inputs:
+              azureSubscription: ${{ parameters.azureServiceConnection }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                # Extract Key Vault Name from JSON file
+                KEYVAULT_NAME=$(jq -r '.kv_name.value' "$JSON_OUTPUT_PATH")
+
+                echo "Importing certificate into Key Vault: $KEYVAULT_NAME"
+                
+                # Define certificate path and password
+                CERT_PATH=$(Agent.TempDirectory)/my-certificate.pfx
+
+                echo "Importing certificate into Key Vault: $KEYVAULT_NAME"
+
+                # Import certificate into Key Vault
+                az keyvault certificate import \
+                  --vault-name $KEYVAULT_NAME \
+                  --name "my-ssl-cert" \
+                  --file $CERT_PATH \
+                  --password $CERT_PASSWORD
+
+          # Step: Install kubectl       
+          - task: Bash@3
+            displayName: "Install kubectl"
+            inputs:
+              targetType: 'inline'
+              script: |
+                echo "Installing kubectl..."
+                curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+                chmod +x kubectl
+                sudo mv kubectl /usr/local/bin/
+                echo "kubectl version:"
+                kubectl version --client
+
+          # Step: Retrieve AKS Credentials
+          - task: AzureCLI@2
+            displayName: "Retrieve AKS Credentials"
+            env:
+              JSON_OUTPUT_PATH: $(System.DefaultWorkingDirectory)/outputs.json
+            inputs:
+              azureSubscription: ${{ parameters.azureServiceConnection }}
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                # Extract AKS cluster name from Terraform outputs
+                AKS_CLUSTER_NAME=$(jq -r '.aks_cluster_name.value' "$JSON_OUTPUT_PATH")
+                AKS_RESOURCE_GROUP=$(jq -r '.aks_resource_group.value' "$JSON_OUTPUT_PATH")
+
+                echo "Getting credentials for AKS Cluster: $AKS_CLUSTER_NAME in Resource Group: $AKS_RESOURCE_GROUP"
+
+                # Retrieve credentials
+                az aks get-credentials --resource-group $AKS_RESOURCE_GROUP --name $AKS_CLUSTER_NAME --overwrite-existing
+
+                # Verify kubectl access
+                kubectl get nodes
+
+          # Step: Install Helm
+          - task: HelmInstaller@1 #built in DevOps; no need to install seprately from marketplace
+            displayName: "Install Helm"
+            inputs:
+              helmVersion: 'latest'
+
+          # Step: Add Helm Repository
+          - script: |
+              echo "Adding Helm repository..."
+              helm repo add csi-secrets-store-provider-azure https://azure.github.io/secrets-store-csi-driver-provider-azure/charts
+              helm repo update
+            displayName: "Add Helm Repository"
+
+          # Step: Install CSI driver only if it's missing
+          - script: |
+              echo "Checking if the Helm release 'csi-azure-provider' is already installed..."
+              RELEASE_NAME="csi-azure-provider"
+              NAMESPACE="kube-system"
+              
+              # Check if the release exists
+              if helm list --namespace $NAMESPACE --filter "^$RELEASE_NAME\$" | grep -q $RELEASE_NAME; then
+                echo "Helm release '$RELEASE_NAME' already exists in namespace '$NAMESPACE'. Skipping installation."
+              else
+                echo "Helm release '$RELEASE_NAME' does not exist. Proceeding with installation..."
+                helm install $RELEASE_NAME csi-secrets-store-provider-azure/csi-secrets-store-provider-azure --namespace $NAMESPACE
+              fi
+            displayName: "Install CSI driver if Not Installed"
+
+          # Step: Clone HelmCharts Repository
+          - task: Bash@3
+            displayName: "Clone HelmCharts Repository"
+            inputs:
+              targetType: inline
+              script: |
+                echo "Cloning HelmCharts repository..."
+                git clone https://$(GIT_PAT)@dev.azure.com/atanasmanoilov/HelmCharts/_git/HelmCharts $(System.DefaultWorkingDirectory)/HelmCharts
+                echo "Repository cloned successfully."
+
+          # Step: Package Helm Chart            
+          - task: Bash@3
+            displayName: "Package Helm Charts"
+            inputs:
+              targetType: inline
+              script: |
+                echo "Packaging Helm charts..."
+                
+                # Define directories for the charts
+                PRE_REQS_DIR=$(System.DefaultWorkingDirectory)/HelmCharts/pre-reqs
+                NGINX_INGRESS_DIR=$(System.DefaultWorkingDirectory)/HelmCharts/nginx-ingress
+                OUTPUT_DIR=$(System.DefaultWorkingDirectory)/helm_output
+
+                # Create output directory
+                mkdir -p $OUTPUT_DIR
+
+                # Package pre-reqs chart
+                echo "Packaging pre-reqs chart..."
+                helm package $PRE_REQS_DIR -d $OUTPUT_DIR
+
+                # Package nginx-ingress chart
+                echo "Packaging nginx-ingress chart..."
+                helm package $NGINX_INGRESS_DIR -d $OUTPUT_DIR
+
+                echo "Helm charts packaged successfully."
+                ls -la $OUTPUT_DIR
+
+
+          # Step: Push Helm Charts to ACR
+          - task: AzureCLI@2
+            displayName: "Push Helm Charts to ACR"
+            env:
+              JSON_OUTPUT_PATH: $(System.DefaultWorkingDirectory)/outputs.json  
+            inputs:
+              azureSubscription: ${{ parameters.azureServiceConnection }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                OUTPUT_DIR=$(System.DefaultWorkingDirectory)/helm_output
+
+                # Extract ACR name from Terraform outputs
+                ACR_NAME=$(jq -r '.acr_name.value' "$JSON_OUTPUT_PATH")
+                ACR_LOGIN_SERVER="${ACR_NAME}.azurecr.io"
+
+                echo "Getting an ACR access token..."
+                export ACCESS_TOKEN=$(az acr login --name $ACR_NAME --expose-token --query accessToken -o tsv)
+
+                echo "Logging into ACR using Helm registry login..."
+                echo $ACCESS_TOKEN | helm registry login $ACR_LOGIN_SERVER --username 00000000-0000-0000-0000-000000000000 --password-stdin
+                echo "Pushing Helm charts to ACR..."
+                
+                for chart in $OUTPUT_DIR/*.tgz; do
+                  echo "Pushing chart: $chart"
+                  helm push $chart oci://$ACR_LOGIN_SERVER
+                  
+                  if [ $? -ne 0 ]; then
+                    echo "Error: Failed to push chart: $chart"
+                    exit 1  # Exit the task with a failure if `helm push` fails
+                  fi
+                done
+
+                echo "Helm charts pushed successfully."
+                unset ACCESS_TOKEN  # Clear the token from the environment after use
+
+          # Step: Install 'pre-reqs' Helm Chart
+          - task: AzureCLI@2
+            displayName: "Install pre-reqs Helm Chart"
+            env:
+              JSON_OUTPUT_PATH: $(System.DefaultWorkingDirectory)/outputs.json
+            inputs:
+              azureSubscription: ${{ parameters.azureServiceConnection }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                # Extract keyVault.name from Terraform outputs
+                KEYVAULT_NAME=$(jq -r '.kv_name.value' "$JSON_OUTPUT_PATH")
+
+                # ACR login details
+                ACR_NAME=$(jq -r '.acr_name.value' "$JSON_OUTPUT_PATH")
+                ACR_LOGIN_SERVER="${ACR_NAME}.azurecr.io"
+
+                # Authenticate to ACR
+                echo "Authenticating Helm to ACR: $ACR_LOGIN_SERVER"
+                export ACCESS_TOKEN=$(az acr login --name $ACR_NAME --expose-token --query accessToken -o tsv)
+                echo $ACCESS_TOKEN | helm registry login $ACR_LOGIN_SERVER --username 00000000-0000-0000-0000-000000000000 --password-stdin
+
+                # Helm chart details
+                RELEASE_NAME="prereqs"
+                CHART_URI="oci://$ACR_LOGIN_SERVER/pre-reqs"
+                VERSION="0.1.0"
+
+                # Check if the release exists with the given version
+                echo "Checking if Helm release '$RELEASE_NAME' version '$VERSION' exists..."
+                if helm list --filter "^$RELEASE_NAME\$" | grep -q $RELEASE_NAME; then
+                  INSTALLED_VERSION=$(helm ls --all-namespaces -o json | jq -r --arg name "$RELEASE_NAME" '.[] | select(.name == $name) | .chart' | awk -F- '{print $NF}')
+                  if [ "$INSTALLED_VERSION" == "$VERSION" ]; then
+                    echo "Helm release '$RELEASE_NAME' version '$VERSION' is already installed. Skipping."
+                    exit 0
+                  fi
+                fi
+
+                # Install the chart
+                echo "Installing Helm chart '$CHART_URI' with release name '$RELEASE_NAME'..."
+                helm install $RELEASE_NAME $CHART_URI --version $VERSION --set keyVault.name=$KEYVAULT_NAME
+
+          # Step: Install 'nginx-ingress' Helm Chart
+          - task: AzureCLI@2
+            displayName: "Install nginx-ingress Helm Chart"
+            env:
+              JSON_OUTPUT_PATH: $(System.DefaultWorkingDirectory)/outputs.json
+            inputs:
+              azureSubscription: ${{ parameters.azureServiceConnection }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                # ACR login details
+                ACR_NAME=$(jq -r '.acr_name.value' "$JSON_OUTPUT_PATH")
+                ACR_LOGIN_SERVER="${ACR_NAME}.azurecr.io"
+
+                # Authenticate to ACR
+                echo "Authenticating Helm to ACR: $ACR_LOGIN_SERVER"
+                export ACCESS_TOKEN=$(az acr login --name $ACR_NAME --expose-token --query accessToken -o tsv)
+                echo $ACCESS_TOKEN | helm registry login $ACR_LOGIN_SERVER --username 00000000-0000-0000-0000-000000000000 --password-stdin
+
+                # Helm chart details
+                RELEASE_NAME="amanoilovx"
+                CHART_URI="oci://$ACR_LOGIN_SERVER/nginx-ingress"
+                VERSION="0.1.0"
+
+                # Check if the release exists with the given version
+                echo "Checking if Helm release '$RELEASE_NAME' version '$VERSION' exists..."
+                if helm list --filter "^$RELEASE_NAME\$" | grep -q $RELEASE_NAME; then
+                  INSTALLED_VERSION=$(helm ls --all-namespaces -o json | jq -r --arg name "$RELEASE_NAME" '.[] | select(.name == $name) | .chart' | awk -F- '{print $NF}')
+                  if [ "$INSTALLED_VERSION" == "$VERSION" ]; then
+                    echo "Helm release '$RELEASE_NAME' version '$VERSION' is already installed. Skipping."
+                    exit 0
+                  fi
+                fi
+
+                # Install the chart
+                echo "Installing Helm chart '$CHART_URI' with release name '$RELEASE_NAME'..."
+                helm install $RELEASE_NAME $CHART_URI --version $VERSION
