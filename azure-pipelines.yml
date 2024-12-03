@@ -51,7 +51,7 @@ stages:
 
           # Step: Deploy RGs with Bicep
           - task: AzureCLI@2
-            displayName: "Deploy RGs with ARM"
+            displayName: "Deploy RGs with Bicep"
             inputs:
               azureSubscription: ${{ parameters.azureServiceConnection }}
               scriptType: bash
@@ -61,7 +61,7 @@ stages:
 
           # Step: Deploy Resources with Bicep
           - task: AzureCLI@2
-            displayName: "Deploy Resources with ARM"
+            displayName: "Deploy Resources with Bicep"
             inputs:
               azureSubscription: ${{ parameters.azureServiceConnection }}
               scriptType: bash
