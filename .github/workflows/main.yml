@@ -1,8 +1,6 @@
 name: FirstProject/AKS_pipeline_with_Bicep
 on:
-  push:
-    branches:
-    - none
+  workflow_dispatch: 
 env:
   REPO_URL: https://dev.azure.com/atanasmanoilov/HelmCharts/_git/HelmCharts
 jobs:
