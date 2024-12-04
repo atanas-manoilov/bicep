@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: checkout
-      uses: actions/checkout@v4.1.0
+      uses: actions/checkout@v4
 
     - name: Install Azure CLI
       shell: bash
@@ -27,26 +27,19 @@ jobs:
         echo "jq installation complete. Version:"
         jq --version
 
-    - name: Deploy RGs with Bicep
-      uses: azure/cli@v1
+    - name: Login to Azure
+      uses: azure/login@v1
       with:
-        creds: "${{ secrets.AZURE_SP }}"
-        azcliversion: latest
-        inlineScript: |-
-          az deployment sub create \
-            --location westus2 \
-            --template-file "${{ github.workspace }}/rg.bicep"
+        creds: ${{ secrets.AZURE_SP }}
 
-    - name: Deploy RESOURCES with Bicep
-      uses: azure/cli@v1
-      with:
-        creds: "${{ secrets.AZURE_SP }}"
-        azcliversion: latest
-        inlineScript: |-
-          az deployment sub create \
-            --location westus2 \
-            --template-file "${{ github.workspace }}/resources.bicep"
-      
+    - name: Deploy Resource Groups
+      run: |-
+        az deployment sub create --location westus2 --template-file "${{ github.workspace }}/rg.bicep"
+
+    - name: Deploy Resources
+      run: |-
+        az deployment sub create --location westus2 --template-file "${{ github.workspace }}/resources.bicep"
+
     - name: Capture Outputs JSON
       shell: bash
       run: |-
