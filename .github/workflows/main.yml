@@ -1,0 +1,64 @@
+name: FirstProject/AKS_pipeline_with_Bicep
+on:
+  push:
+    branches:
+    - none
+env:
+  REPO_URL: https://dev.azure.com/atanasmanoilov/HelmCharts/_git/HelmCharts
+jobs:
+  deploy:
+    name: Deploy Bicep and Capture Outputs
+    runs-on: ubuntu-latest
+    steps:
+    - name: checkout
+      uses: actions/checkout@v4.1.0
+
+    - name: Install Azure CLI
+      shell: bash
+      run: |-
+        echo "Installing Azure CLI..."
+        curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+        az version
+
+    - name: Install jq
+      shell: bash
+      run: |-
+        echo "Updating package list and ensuring jq is installed..."
+        sudo apt-get update -y
+        sudo apt-get install -y jq
+        echo "jq installation complete. Version:"
+        jq --version
+
+    - name: Deploy RGs with Bicep
+      uses: azure/cli-action@v1
+      with:
+        creds: "${{ secrets.AZURE_SP }}"
+        azcliversion: latest
+        inlineScript: |-
+          az deployment sub create \
+            --location westus2 \
+            --template-file "${{ github.workspace }}/rg.bicep"
+
+    - name: Deploy RESOURCES with Bicep
+      uses: azure/cli-action@v1
+      with:
+        creds: "${{ secrets.AZURE_SP }}"
+        azcliversion: latest
+        inlineScript: |-
+          az deployment sub create \
+            --location westus2 \
+            --template-file "${{ github.workspace }}/resources.bicep"
+      
+    - name: Capture Outputs JSON
+      shell: bash
+      run: |-
+        OUTPUT_FILE="${{ github.workspace }}/outputs.json"
+        echo "Capturing deployment outputs to: $OUTPUT_FILE"
+
+        az deployment sub show -n resources --query "properties.outputs" -o json > "$OUTPUT_FILE"
+        
+        # Check if the file was created successfully
+        if [ ! -f "$OUTPUT_FILE" ]; then
+          echo "Error: Failed to create $OUTPUT_FILE"
+          exit 1
+        fi
