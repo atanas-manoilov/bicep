@@ -1,10 +1,12 @@
 name: FirstProject/AKS_pipeline_with_Bicep
 on:
   workflow_dispatch: 
+
 jobs:
   deploy:
     name: Deploy Bicep and Capture Outputs
     runs-on: ubuntu-latest
+
     steps:
     - name: checkout
       uses: actions/checkout@v4
@@ -34,9 +36,36 @@ jobs:
       run: |-
         az deployment sub create --location westus2 --template-file "${{ github.workspace }}/rg.bicep"
 
-    - name: Deploy Resources
-      run: |-
-        az deployment sub create --location westus2 --template-file "${{ github.workspace }}/resources.bicep"
+    - name: Check for existing Key Vault
+      id: check_key_vault
+      env:
+        RESOURCE_GROUP: 'my_kv_rg'
+      run: |
+        kv_name=$(az resource list \
+          --resource-group $RESOURCE_GROUP \
+          --resource-type "Microsoft.KeyVault/vaults" \
+          --query "[0].name" -o tsv)
+
+        if [ -z "$kv_name" ]; then
+          echo "No Key Vault found."
+          echo "::set-output name=key_vault_exists::false"
+          echo "::set-output name=key_vault_name::none"
+        else
+          echo "Key Vault found: $kv_name"
+          echo "::set-output name=key_vault_exists::true"
+          echo "::set-output name=key_vault_name::$kv_name"
+        fi
+
+    - name: Deploy Main Bicep Template
+      run: |
+        utc_suffix=$(date -u +%Y%m%d%H%M%S)
+        az deployment sub create \
+          --location westus2 \
+          --template-file "${{ github.workspace }}/resources.bicep" \
+          --parameters \
+            keyVaultExists=${{ steps.check_key_vault.outputs.key_vault_exists }} \
+            existingKeyVaultName=${{ steps.check_key_vault.outputs.key_vault_name }} \
+            utcSuffix=$utc_suffix
 
     - name: Capture Outputs JSON
       shell: bash

@@ -1,6 +1,10 @@
 param privateEndpointSubnetId string
 param vnetId string
 param KeyVaultName string
+param keyVaultExists bool
+param existingKeyVaultName string
+param utcSuffix string
+
 
 param allowedIps array = [
   {
@@ -21,8 +25,10 @@ param tenantId string = 'f985b02a-13bf-4b1e-88e7-d4ce214ad1b1'
 param dnsLinkName string = 'kv-dns-link'
 param environment string = 'production'
 
+var targetKeyVaultName = keyVaultExists ? existingKeyVaultName : '${KeyVaultName}-${utcSuffix}'
+
 resource KeyVault 'Microsoft.KeyVault/vaults@2022-07-01' = {
-  name: KeyVaultName
+  name: targetKeyVaultName
   location: location
   properties: {
     sku: {
@@ -49,8 +55,8 @@ resource KeyVault 'Microsoft.KeyVault/vaults@2022-07-01' = {
   }
 }
 
-resource KeyVaultName_pe 'Microsoft.Network/privateEndpoints@2023-11-01' = {
-  name: '${KeyVaultName}-pe'
+resource targetKeyVaultName_pe 'Microsoft.Network/privateEndpoints@2023-11-01' = {
+  name: '${targetKeyVaultName}-pe'
   location: location
   properties: {
     subnet: {
@@ -58,7 +64,7 @@ resource KeyVaultName_pe 'Microsoft.Network/privateEndpoints@2023-11-01' = {
     }
     privateLinkServiceConnections: [
       {
-        name: '${KeyVaultName}-connection'
+        name: '${targetKeyVaultName}-connection'
         properties: {
           privateLinkServiceId: KeyVault.id
           groupIds: [
@@ -96,7 +102,7 @@ resource privatelink_vaultcore_azure_net_dnsLink 'Microsoft.Network/privateDnsZo
 }
 
 resource KeyVaultName_pe_keyvault_dns_zone_group 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2023-11-01' = {
-  parent: KeyVaultName_pe
+  parent: targetKeyVaultName_pe
   name: 'keyvault-dns-zone-group'
   properties: {
     privateDnsZoneConfigs: [
@@ -110,5 +116,5 @@ resource KeyVaultName_pe_keyvault_dns_zone_group 'Microsoft.Network/privateEndpo
   }
 }
 
-output kvName string = KeyVaultName
+output kvName string = targetKeyVaultName
 output keyVaultResourceId string = KeyVault.id

@@ -1,5 +1,8 @@
 targetScope = 'subscription'
 param KeyVaultName string = 'amanoilov-pipeline02'
+param keyVaultExists bool
+param existingKeyVaultName string
+param utcSuffix string
 
 @description('The name of the resource group for the VNet.')
 param vnetResourceGroupName string = 'my_vnet_rg'
@@ -38,6 +41,9 @@ module kvDeployment './KV.bicep' = {
     privateEndpointSubnetId: first(filter(vnetDeployment.outputs.subnetIds, s => s.subnetName == 'amanoilov-private-endpoint-subnet')).resourceId
     vnetId: vnetDeployment.outputs.vnetId
     KeyVaultName: KeyVaultName
+    existingKeyVaultName: existingKeyVaultName
+    keyVaultExists: keyVaultExists
+    utcSuffix: utcSuffix
   }
 }
 
