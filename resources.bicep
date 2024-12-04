@@ -1,5 +1,5 @@
 targetScope = 'subscription'
-param KeyVaultName string = 'amanoilov-pipeline02'
+param KeyVaultName string = 'am'
 param keyVaultExists bool
 param existingKeyVaultName string
 param utcSuffix string
