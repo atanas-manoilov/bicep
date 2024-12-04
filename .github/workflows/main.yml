@@ -28,7 +28,7 @@ jobs:
         jq --version
 
     - name: Deploy RGs with Bicep
-      uses: azure/cli-action@v1
+      uses: azure/cli@v1
       with:
         creds: "${{ secrets.AZURE_SP }}"
         azcliversion: latest
@@ -38,7 +38,7 @@ jobs:
             --template-file "${{ github.workspace }}/rg.bicep"
 
     - name: Deploy RESOURCES with Bicep
-      uses: azure/cli-action@v1
+      uses: azure/cli@v1
       with:
         creds: "${{ secrets.AZURE_SP }}"
         azcliversion: latest
