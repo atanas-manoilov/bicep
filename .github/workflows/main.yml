@@ -8,6 +8,13 @@ jobs:
     runs-on: self-hosted
 
     steps:
+
+    - name: Clear env
+      run: |
+        unset key_vault_exists
+        unset key_vault_name
+        rm -rf ${{ github.workspace }}/*
+    
     - name: checkout
       uses: actions/checkout@v4
 
