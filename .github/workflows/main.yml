@@ -93,8 +93,15 @@ jobs:
         CERT_PASSWORD: ${{ secrets.CERTPASSWORD }}
       shell: bash
       run: |-
+
         # Extract Key Vault Name from JSON file
         KEYVAULT_NAME=$(jq -r '.kv_name.value' "$JSON_OUTPUT_PATH")
+
+        # Temp IP ACL to the key vault
+        RUNNER_IP=$(curl -s ifconfig.me)
+        echo "Runner IP: $RUNNER_IP"
+        az keyvault network-rule add --name $KEYVAULT_NAME --ip-address $RUNNER_IP
+
 
         echo "Importing certificate into Key Vault: $KEYVAULT_NAME"
 
@@ -109,6 +116,10 @@ jobs:
           --name "my-ssl-cert" \
           --file $CERT_PATH \
           --password $CERT_PASSWORD
+
+        # Remove temporary ACL
+        az keyvault network-rule remove --name $KEYVAULT_NAME --ip-address $RUNNER_IP
+
 
     - name: Install kubectl
       shell: bash
