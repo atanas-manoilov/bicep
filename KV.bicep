@@ -41,7 +41,7 @@ resource KeyVault 'Microsoft.KeyVault/vaults@2022-07-01' = {
     enableSoftDelete: true
     networkAcls: {
       defaultAction: 'Deny'
-      bypass: 'None'
+      bypass: 'AzureServices'
       ipRules: allowedIps
       virtualNetworkRules: [
         {
