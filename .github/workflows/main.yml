@@ -64,7 +64,7 @@ jobs:
         fi
     - name: Debugging env variables
       run: |-
-        echo "key_vault_exists env variable:  $key_vault_exist"
+        echo "key_vault_exists env variable:  $key_vault_exists"
         echo "key_vault_name env variable:    $key_vault_name"
         echo "Debugging $GITHUB_ENV:"
         cat $GITHUB_ENV
