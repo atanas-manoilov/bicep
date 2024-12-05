@@ -77,7 +77,7 @@ jobs:
           --location westus2 \
           --template-file "${{ github.workspace }}/resources.bicep" \
           --parameters \
-            keyVaultExists=$key_vault_exist \
+            keyVaultExists=$key_vault_exists \
             existingKeyVaultName=$key_vault_name \
             utcSuffix=$utc_suffix
 
