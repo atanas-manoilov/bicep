@@ -20,6 +20,7 @@ var additionalObjectIds = [
   'c0cd7fd7-bd4b-4ecc-a059-a03b3994761f'
   '019bb3b3-c281-4fc1-87f7-df6974d55f91'
   '019bb3b3-c281-4fc1-87f7-df6974d55f91'
+  '2cf021f1-5510-4190-9169-0cb71d696330'
 ]
 
 module vnetDeployment './VNET.bicep' = {
