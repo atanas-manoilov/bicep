@@ -47,7 +47,7 @@ jobs:
       id: check_key_vault
       env:
         RESOURCE_GROUP: 'my_kv_rg'
-      run: |
+      run: |-
         kv_name=$(az resource list \
           --resource-group $RESOURCE_GROUP \
           --resource-type "Microsoft.KeyVault/vaults" \
@@ -62,14 +62,16 @@ jobs:
           echo "key_vault_exists=true" >> $GITHUB_ENV
           echo "key_vault_name=$kv_name" >> $GITHUB_ENV
         fi
-
-    - name: Deploy Main Bicep Template
-      run: |
-        utc_suffix=$(date -u +%Y%m%d%H%M%S)
+    - name: Debugging env variables
+      run: |-
         echo "key_vault_exists env variable:  $key_vault_exist"
         echo "key_vault_name env variable:    $key_vault_name"
         echo "Debugging $GITHUB_ENV:"
         cat $GITHUB_ENV
+
+    - name: Deploy Main Bicep Template
+      run: |-
+        utc_suffix=$(date -u +%Y%m%d%H%M%S)
 
         az deployment sub create \
           --location westus2 \
