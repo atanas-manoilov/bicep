@@ -118,3 +118,7 @@ resource KeyVaultName_pe_keyvault_dns_zone_group 'Microsoft.Network/privateEndpo
 
 output kvName string = targetKeyVaultName
 output keyVaultResourceId string = KeyVault.id
+
+output keyVaultExists bool = keyVaultExists
+output existingKeyVaultName string = existingKeyVaultName
+output targetKeyVaultName string = targetKeyVaultName

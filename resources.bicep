@@ -81,3 +81,7 @@ output aks_cluster_name string = aksDeployment.outputs.aksClusterName
 output aks_resource_group string = aksDeployment.outputs.aksClusterResourceGroup
 output kv_name string = kvDeployment.outputs.kvName
 output acr_name string = acrDeployment.outputs.acrName
+
+output keyVaultExists bool = kvDeployment.outputs.keyVaultExists
+output existingKeyVaultName string = kvDeployment.outputs.existingKeyVaultName
+output targetKeyVaultName string = kvDeployment.outputs.targetKeyVaultName
