@@ -61,8 +61,9 @@ jobs:
         utc_suffix=$(date -u +%Y%m%d%H%M%S)
         echo "key_vault_exists env variable:  $key_vault_exist"
         echo "key_vault_name env variable:    $key_vault_name"
+        echo "Debugging $GITHUB_ENV:"
+        cat $GITHUB_ENV
 
-        echo $key_vault_name
         az deployment sub create \
           --location westus2 \
           --template-file "${{ github.workspace }}/resources.bicep" \
