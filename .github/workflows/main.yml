@@ -3,8 +3,9 @@ on:
   workflow_dispatch: 
 
 jobs:
-  deploy:
-    name: Deploy Bicep and Capture Outputs
+  # Build Job
+  build:
+    name: Build Bicep and Capture Outputs
     runs-on: self-hosted
 
     steps:
@@ -62,6 +63,7 @@ jobs:
           echo "key_vault_exists=true" >> $GITHUB_ENV
           echo "key_vault_name=$kv_name" >> $GITHUB_ENV
         fi
+
     - name: Debugging env variables
       run: |-
         echo "key_vault_exists env variable:  $key_vault_exists"
@@ -94,6 +96,12 @@ jobs:
           echo "Error: Failed to create $OUTPUT_FILE"
           exit 1
         fi
+
+    - name: Upload Deployment Outputs as Artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: deployment-outputs
+        path: ${{ github.workspace }}/outputs.json
 
     - name: Decode and restore SSL
       env:
@@ -150,7 +158,7 @@ jobs:
         JSON_OUTPUT_PATH: "${{ github.workspace }}/outputs.json"
       shell: bash
       run: |-
-        # Extract AKS cluster name from Terraform outputs
+        # Extract AKS cluster name from output's artefact
         AKS_CLUSTER_NAME=$(jq -r '.aks_cluster_name.value' "$JSON_OUTPUT_PATH")
         AKS_RESOURCE_GROUP=$(jq -r '.aks_resource_group.value' "$JSON_OUTPUT_PATH")
 
@@ -167,7 +175,7 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         
-    - name: Add Helm Repository
+    - name: Add Helm Repository for CSI driver
       run: |-
         echo "Adding Helm repository..."
         helm repo add csi-secrets-store-provider-azure https://azure.github.io/secrets-store-csi-driver-provider-azure/charts
@@ -251,72 +259,145 @@ jobs:
         echo "Helm charts pushed successfully."
         unset ACCESS_TOKEN  # Clear the token from the environment after use
 
+  # Build Job
+  release:
+    name: Release Helm Charts
+    needs: build
+    runs-on: self-hosted
+    environment:
+      name: production  # Environment requiring manual approval
+      url: https://example.com  # Optional: Link to deployment
+    steps:
 
-    - name: Install pre-reqs Helm Chart
-      env:
-        JSON_OUTPUT_PATH: "${{ github.workspace }}/outputs.json"
-      shell: bash
-      run: |-
-        # Extract keyVault.name from Terraform outputs
-        KEYVAULT_NAME=$(jq -r '.kv_name.value' "$JSON_OUTPUT_PATH")
+      - name: Clear env
+        run: |
+          unset key_vault_exists
+          unset key_vault_name
+          rm -rf ${{ github.workspace }}/*
 
-        # ACR login details
-        ACR_NAME=$(jq -r '.acr_name.value' "$JSON_OUTPUT_PATH")
-        ACR_LOGIN_SERVER="${ACR_NAME}.azurecr.io"
+      - name: Install Azure CLI
+        shell: bash
+        run: |-
+          echo "Installing Azure CLI..."
+          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+          az version
 
-        # Authenticate to ACR
-        echo "Authenticating Helm to ACR: $ACR_LOGIN_SERVER"
-        export ACCESS_TOKEN=$(az acr login --name $ACR_NAME --expose-token --query accessToken -o tsv)
-        echo $ACCESS_TOKEN | helm registry login $ACR_LOGIN_SERVER --username 00000000-0000-0000-0000-000000000000 --password-stdin
+      - name: Install jq
+        shell: bash
+        run: |-
+          echo "Updating package list and ensuring jq is installed..."
+          sudo apt-get update -y
+          sudo apt-get install -y jq
+          echo "jq installation complete. Version:"
+          jq --version
 
-        # Helm chart details
-        RELEASE_NAME="prereqs"
-        CHART_URI="oci://$ACR_LOGIN_SERVER/pre-reqs"
-        VERSION="0.1.0"
+      - name: Install Helm
+        uses: azure/setup-helm@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-        # Check if the release exists with the given version
-        echo "Checking if Helm release '$RELEASE_NAME' version '$VERSION' exists..."
-        if helm list --filter "^$RELEASE_NAME\$" | grep -q $RELEASE_NAME; then
-          INSTALLED_VERSION=$(helm ls --all-namespaces -o json | jq -r --arg name "$RELEASE_NAME" '.[] | select(.name == $name) | .chart' | awk -F- '{print $NF}')
-          if [ "$INSTALLED_VERSION" == "$VERSION" ]; then
-            echo "Helm release '$RELEASE_NAME' version '$VERSION' is already installed. Skipping."
-            exit 0
+      - name: Install kubectl
+        shell: bash
+        run: |-
+          echo "Installing kubectl..."
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
+          echo "kubectl version:"
+          kubectl version --client
+
+      - name: Download Deployment Outputs Artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: deployment-outputs
+
+      - name: Login to Azure
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_SP }}
+
+      - name: Retrieve AKS Credentials
+        env:
+          JSON_OUTPUT_PATH: "${{ github.workspace }}/outputs.json"
+        shell: bash
+        run: |-
+          # Extract AKS cluster name from output's artefact
+          AKS_CLUSTER_NAME=$(jq -r '.aks_cluster_name.value' "$JSON_OUTPUT_PATH")
+          AKS_RESOURCE_GROUP=$(jq -r '.aks_resource_group.value' "$JSON_OUTPUT_PATH")
+  
+          echo "Getting credentials for AKS Cluster: $AKS_CLUSTER_NAME in Resource Group: $AKS_RESOURCE_GROUP"
+  
+          # Retrieve credentials
+          az aks get-credentials --resource-group $AKS_RESOURCE_GROUP --name $AKS_CLUSTER_NAME --overwrite-existing
+  
+          # Verify kubectl access
+          kubectl get nodes
+          
+      - name: Install pre-reqs Helm Chart
+        env:
+          JSON_OUTPUT_PATH: "${{ github.workspace }}/outputs.json"
+        shell: bash
+        run: |-
+          # Extract keyVault.name from Terraform outputs
+          KEYVAULT_NAME=$(jq -r '.kv_name.value' "$JSON_OUTPUT_PATH")
+
+          # ACR login details
+          ACR_NAME=$(jq -r '.acr_name.value' "$JSON_OUTPUT_PATH")
+          ACR_LOGIN_SERVER="${ACR_NAME}.azurecr.io"
+
+          # Authenticate to ACR
+          echo "Authenticating Helm to ACR: $ACR_LOGIN_SERVER"
+          export ACCESS_TOKEN=$(az acr login --name $ACR_NAME --expose-token --query accessToken -o tsv)
+          echo $ACCESS_TOKEN | helm registry login $ACR_LOGIN_SERVER --username 00000000-0000-0000-0000-000000000000 --password-stdin
+
+          # Helm chart details
+          RELEASE_NAME="prereqs"
+          CHART_URI="oci://$ACR_LOGIN_SERVER/pre-reqs"
+          VERSION="0.1.0"
+
+          # Check if the release exists with the given version
+          echo "Checking if Helm release '$RELEASE_NAME' version '$VERSION' exists..."
+          if helm list --filter "^$RELEASE_NAME\$" | grep -q $RELEASE_NAME; then
+            INSTALLED_VERSION=$(helm ls --all-namespaces -o json | jq -r --arg name "$RELEASE_NAME" '.[] | select(.name == $name) | .chart' | awk -F- '{print $NF}')
+            if [ "$INSTALLED_VERSION" == "$VERSION" ]; then
+              echo "Helm release '$RELEASE_NAME' version '$VERSION' is already installed. Skipping."
+              exit 0
+            fi
           fi
-        fi
 
-        # Install the chart
-        echo "Installing Helm chart '$CHART_URI' with release name '$RELEASE_NAME'..."
-        helm install $RELEASE_NAME $CHART_URI --version $VERSION --set keyVault.name=$KEYVAULT_NAME
+          # Install the chart
+          echo "Installing Helm chart '$CHART_URI' with release name '$RELEASE_NAME'..."
+          helm install $RELEASE_NAME $CHART_URI --version $VERSION --set keyVault.name=$KEYVAULT_NAME
 
-    - name: Install nginx-ingress Helm Chart
-      env:
-        JSON_OUTPUT_PATH: "${{ github.workspace }}/outputs.json"
-      shell: bash
-      run: |-
-        # ACR login details
-        ACR_NAME=$(jq -r '.acr_name.value' "$JSON_OUTPUT_PATH")
-        ACR_LOGIN_SERVER="${ACR_NAME}.azurecr.io"
+      - name: Install nginx-ingress Helm Chart
+        env:
+          JSON_OUTPUT_PATH: "${{ github.workspace }}/outputs.json"
+        shell: bash
+        run: |-
+          # ACR login details
+          ACR_NAME=$(jq -r '.acr_name.value' "$JSON_OUTPUT_PATH")
+          ACR_LOGIN_SERVER="${ACR_NAME}.azurecr.io"
 
-        # Authenticate to ACR
-        echo "Authenticating Helm to ACR: $ACR_LOGIN_SERVER"
-        export ACCESS_TOKEN=$(az acr login --name $ACR_NAME --expose-token --query accessToken -o tsv)
-        echo $ACCESS_TOKEN | helm registry login $ACR_LOGIN_SERVER --username 00000000-0000-0000-0000-000000000000 --password-stdin
+          # Authenticate to ACR
+          echo "Authenticating Helm to ACR: $ACR_LOGIN_SERVER"
+          export ACCESS_TOKEN=$(az acr login --name $ACR_NAME --expose-token --query accessToken -o tsv)
+          echo $ACCESS_TOKEN | helm registry login $ACR_LOGIN_SERVER --username 00000000-0000-0000-0000-000000000000 --password-stdin
 
-        # Helm chart details
-        RELEASE_NAME="amanoilovx"
-        CHART_URI="oci://$ACR_LOGIN_SERVER/nginx-ingress"
-        VERSION="0.1.0"
+          # Helm chart details
+          RELEASE_NAME="amanoilovx"
+          CHART_URI="oci://$ACR_LOGIN_SERVER/nginx-ingress"
+          VERSION="0.1.0"
 
-        # Check if the release exists with the given version
-        echo "Checking if Helm release '$RELEASE_NAME' version '$VERSION' exists..."
-        if helm list --filter "^$RELEASE_NAME\$" | grep -q $RELEASE_NAME; then
-          INSTALLED_VERSION=$(helm ls --all-namespaces -o json | jq -r --arg name "$RELEASE_NAME" '.[] | select(.name == $name) | .chart' | awk -F- '{print $NF}')
-          if [ "$INSTALLED_VERSION" == "$VERSION" ]; then
-            echo "Helm release '$RELEASE_NAME' version '$VERSION' is already installed. Skipping."
-            exit 0
+          # Check if the release exists with the given version
+          echo "Checking if Helm release '$RELEASE_NAME' version '$VERSION' exists..."
+          if helm list --filter "^$RELEASE_NAME\$" | grep -q $RELEASE_NAME; then
+            INSTALLED_VERSION=$(helm ls --all-namespaces -o json | jq -r --arg name "$RELEASE_NAME" '.[] | select(.name == $name) | .chart' | awk -F- '{print $NF}')
+            if [ "$INSTALLED_VERSION" == "$VERSION" ]; then
+              echo "Helm release '$RELEASE_NAME' version '$VERSION' is already installed. Skipping."
+              exit 0
+            fi
           fi
-        fi
-        
-        # Install the chart
-        echo "Installing Helm chart '$CHART_URI' with release name '$RELEASE_NAME'..."
-        helm install $RELEASE_NAME $CHART_URI --version $VERSION
+          
+          # Install the chart
+          echo "Installing Helm chart '$CHART_URI' with release name '$RELEASE_NAME'..."
+          helm install $RELEASE_NAME $CHART_URI --version $VERSION
